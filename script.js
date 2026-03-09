@@ -1,49 +1,43 @@
-function waitForLibraries(callback, retries = 20) {
-  const ready = typeof Papa !== 'undefined' &&
-                typeof countUp !== 'undefined' &&
-                typeof window.jspdf !== 'undefined';
-  if (ready) {
-    callback();
-  } else if (retries > 0) {
-    setTimeout(() => waitForLibraries(callback, retries - 1), 200);
-  } else {
-    console.error('Library CDN gagal dimuat setelah beberapa percobaan.');
-    document.getElementById('logbook-body').innerHTML =
-      '<tr><td colspan="7" style="text-align:center;color:#e11d48;">' +
-      'Gagal memuat library. Periksa koneksi internet Anda dan refresh halaman.' +
-      '</td></tr>';
-  }
-}
-
 window.addEventListener('load', () => {
-  waitForLibraries(initApp);
+  let attempts = 0;
+  const interval = setInterval(() => {
+    attempts++;
+    if (typeof Papa !== 'undefined' && typeof countUp !== 'undefined') {
+      clearInterval(interval);
+      initApp();
+    } else if (attempts > 30) {
+      clearInterval(interval);
+      document.getElementById('logbook-body').innerHTML =
+        '<tr><td colspan="7" style="text-align:center;color:#e11d48;">Gagal memuat library. Periksa koneksi internet dan refresh halaman.</td></tr>';
+    }
+  }, 200);
 });
 
 function initApp() {
   document.getElementById('year').textContent = new Date().getFullYear();
 
   const SHEET_ID = '17BPISEu5o6qDmsNtSh8hmimMLXujwFp4-SpHrQK3XO0';
+  const CSV_URL  = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=0`;
+
   let allData = [];
   const LOKASI_COLUMN_INDEX = 6;
   const ITEMS_PER_PAGE = 10;
   let currentPage = 1;
   let filteredData = [];
 
-  // Counter instances
   const todayCounter = new countUp.CountUp('today-counter', 0, { duration: 2 });
   const monthCounter = new countUp.CountUp('month-counter', 0, { duration: 2 });
   const yearCounter  = new countUp.CountUp('year-counter',  0, { duration: 2 });
-
   todayCounter.start();
   monthCounter.start();
   yearCounter.start();
 
   const lokasiFilter = document.getElementById('lokasi-filter');
-  const refreshBtn = document.getElementById('refresh-btn');
-  const printBtn = document.getElementById('print-pdf-btn');
-  const prevPageBtn = document.getElementById('prev-page');
-  const nextPageBtn = document.getElementById('next-page');
-  const pageInfo = document.getElementById('page-info');
+  const refreshBtn   = document.getElementById('refresh-btn');
+  const printBtn     = document.getElementById('print-pdf-btn');
+  const prevPageBtn  = document.getElementById('prev-page');
+  const nextPageBtn  = document.getElementById('next-page');
+  const pageInfo     = document.getElementById('page-info');
 
   refreshBtn.addEventListener('click', fetchData);
   printBtn.addEventListener('click', printToPdf);
@@ -51,224 +45,124 @@ function initApp() {
   prevPageBtn.addEventListener('click', () => changePage(-1));
   nextPageBtn.addEventListener('click', () => changePage(1));
 
-  // ─── Multiple proxy strategies ───────────────────────────────────────────────
-  const SHEET_BASE_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=0`;
-
-  // Each entry: { label, buildUrl(sheetUrl) }
-  const PROXY_STRATEGIES = [
-    {
-      label: 'allorigins (raw)',
-      buildUrl: (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`
-    },
-    {
-      label: 'corsproxy.io',
-      buildUrl: (u) => `https://corsproxy.io/?${encodeURIComponent(u)}`
-    },
-    {
-      label: 'allorigins (get)',
-      buildUrl: (u) => `https://api.allorigins.win/get?url=${encodeURIComponent(u)}`,
-      isJson: true   // returns { contents: "csv string" }
-    },
-    {
-      label: 'cors.sh (no key)',
-      buildUrl: (u) => `https://cors.sh/${u}`
-    }
-  ];
-
-  // ─── Helpers ──────────────────────────────────────────────────────────────────
   function escapeHTML(str) {
     if (!str) return '';
-    return str.toString().replace(/[&<>"']/g, tag => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-    }[tag] || tag));
+    return str.toString().replace(/[&<>"']/g, t =>
+      ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[t]));
   }
 
   function isValidRow(row) {
-    return row && row.length > LOKASI_COLUMN_INDEX && row.slice(1, 5).every(Boolean) && row[LOKASI_COLUMN_INDEX];
+    return row && row.length > LOKASI_COLUMN_INDEX &&
+           row.slice(1, 5).every(Boolean) && row[LOKASI_COLUMN_INDEX];
   }
 
-  function parseTimestamp(timestamp) {
-    if (!timestamp) return null;
-    let date = new Date(timestamp);
-    if (!isNaN(date.getTime())) return date;
-
-    const parts = timestamp.split(/[\/\s:]/);
-    if (parts.length >= 3) {
-      const day   = parseInt(parts[0], 10);
-      const month = parseInt(parts[1], 10) - 1;
-      const year  = parseInt(parts[2], 10);
-      date = new Date(year, month, day);
-      if (!isNaN(date.getTime())) return date;
+  function parseTimestamp(ts) {
+    if (!ts) return null;
+    let d = new Date(ts);
+    if (!isNaN(d)) return d;
+    const p = ts.split(/[\/\s:]/);
+    if (p.length >= 3) {
+      d = new Date(+p[2], +p[1] - 1, +p[0]);
+      if (!isNaN(d)) return d;
     }
     return null;
   }
 
   function populateLokasiFilter() {
-    const uniqueLokasi = [...new Set(allData.slice(1).map(row => row[LOKASI_COLUMN_INDEX]).filter(Boolean))];
-    uniqueLokasi.sort();
-    const currentFilterValue = lokasiFilter.value;
+    const prev = lokasiFilter.value;
+    const unique = [...new Set(allData.slice(1).map(r => r[LOKASI_COLUMN_INDEX]).filter(Boolean))].sort();
     lokasiFilter.innerHTML = '<option value="all">Semua Lokasi</option>';
-    uniqueLokasi.forEach(lokasi => {
-      const option = document.createElement('option');
-      option.value = lokasi;
-      option.textContent = lokasi;
-      lokasiFilter.appendChild(option);
+    unique.forEach(l => {
+      const o = document.createElement('option');
+      o.value = o.textContent = l;
+      lokasiFilter.appendChild(o);
     });
-    lokasiFilter.value = currentFilterValue;
+    lokasiFilter.value = prev;
   }
 
   function updateCounters(data) {
-    const today        = new Date();
-    const startOfDay   = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-    const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
-    const startOfYear  = new Date(today.getFullYear(), 0, 1);
-
-    const validRows = data.slice(1).filter(isValidRow);
-
-    const todayCount = validRows.filter(r => { const d = parseTimestamp(r[0]); return d && d >= startOfDay; }).length;
-    const monthCount = validRows.filter(r => { const d = parseTimestamp(r[0]); return d && d >= startOfMonth; }).length;
-    const yearCount  = validRows.filter(r => { const d = parseTimestamp(r[0]); return d && d >= startOfYear; }).length;
-
-    todayCounter.update(todayCount);
-    monthCounter.update(monthCount);
-    yearCounter.update(yearCount);
+    const now  = new Date();
+    const day  = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const mon  = new Date(now.getFullYear(), now.getMonth(), 1);
+    const year = new Date(now.getFullYear(), 0, 1);
+    const rows = data.slice(1).filter(isValidRow);
+    todayCounter.update(rows.filter(r => { const d = parseTimestamp(r[0]); return d && d >= day; }).length);
+    monthCounter.update(rows.filter(r => { const d = parseTimestamp(r[0]); return d && d >= mon; }).length);
+    yearCounter.update( rows.filter(r => { const d = parseTimestamp(r[0]); return d && d >= year; }).length);
   }
 
   function changePage(delta) {
-    const totalPages = Math.ceil(filteredData.length / ITEMS_PER_PAGE);
-    currentPage = Math.max(1, Math.min(currentPage + delta, totalPages));
+    const total = Math.ceil(filteredData.length / ITEMS_PER_PAGE);
+    currentPage = Math.max(1, Math.min(currentPage + delta, total));
     renderTable(filteredData);
   }
 
-  function renderTable(dataToRender) {
+  function renderTable(data) {
     const tbody = document.getElementById('logbook-body');
     tbody.innerHTML = '';
-
-    if (!dataToRender.length) {
+    if (!data.length) {
       tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#888;">Tidak ada data yang cocok.</td></tr>';
       pageInfo.textContent = 'Halaman 0 dari 0';
-      prevPageBtn.disabled = true;
-      nextPageBtn.disabled = true;
+      prevPageBtn.disabled = nextPageBtn.disabled = true;
       return;
     }
-
-    const totalPages = Math.ceil((dataToRender.length - 1) / ITEMS_PER_PAGE);
-    const startIdx   = (currentPage - 1) * ITEMS_PER_PAGE + 1;
-    const endIdx     = Math.min(startIdx + ITEMS_PER_PAGE, dataToRender.length);
-
-    dataToRender.slice(startIdx, endIdx).forEach(row => {
+    const total    = Math.ceil((data.length - 1) / ITEMS_PER_PAGE);
+    const startIdx = (currentPage - 1) * ITEMS_PER_PAGE + 1;
+    const endIdx   = Math.min(startIdx + ITEMS_PER_PAGE, data.length);
+    data.slice(startIdx, endIdx).forEach(row => {
       if (!isValidRow(row)) return;
-      tbody.innerHTML += `<tr>
-        <td>${escapeHTML(row[0])}</td>
-        <td>${escapeHTML(row[1])}</td>
-        <td>${escapeHTML(row[2])}</td>
-        <td>${escapeHTML(row[3])}</td>
-        <td>${escapeHTML(row[4])}</td>
-        <td>${escapeHTML(row[5])}</td>
-        <td>${escapeHTML(row[6])}</td>
-      </tr>`;
+      tbody.innerHTML += `<tr>${row.slice(0, 7).map(c => `<td>${escapeHTML(c)}</td>`).join('')}</tr>`;
     });
-
-    pageInfo.textContent = `Halaman ${currentPage} dari ${totalPages}`;
-    prevPageBtn.disabled = currentPage === 1;
-    nextPageBtn.disabled = currentPage === totalPages;
+    pageInfo.textContent  = `Halaman ${currentPage} dari ${total}`;
+    prevPageBtn.disabled  = currentPage === 1;
+    nextPageBtn.disabled  = currentPage === total;
   }
 
   function filterAndRender() {
-    const selectedLokasi = lokasiFilter.value;
+    const sel = lokasiFilter.value;
     currentPage = 1;
-    if (selectedLokasi === 'all') {
-      filteredData = allData;
-    } else {
-      const header = allData[0];
-      filteredData = [header, ...allData.slice(1).filter(row => row[LOKASI_COLUMN_INDEX] === selectedLokasi)];
-    }
+    filteredData = sel === 'all'
+      ? allData
+      : [allData[0], ...allData.slice(1).filter(r => r[LOKASI_COLUMN_INDEX] === sel)];
     renderTable(filteredData);
     updateCounters(filteredData);
   }
 
   function printToPdf() {
     const { jsPDF } = window.jspdf;
-    const doc = new jsPDF('l', 'mm', 'a4');
-    const selectedLokasiValue = lokasiFilter.value;
-    const selectedLokasiText  = lokasiFilter.options[lokasiFilter.selectedIndex].text;
-    const today = new Date().toLocaleDateString('id-ID', { day: '2-digit', month: 'long', year: 'numeric' });
-
-    doc.setFontSize(16); doc.setFont('helvetica', 'bold');
-    doc.text('LOGBOOK PENGGUNAAN LABORATORIUM', doc.internal.pageSize.getWidth() / 2, 15, { align: 'center' });
-    doc.setFontSize(12); doc.setFont('helvetica', 'normal');
-    doc.text(`Lokasi: ${selectedLokasiText}`,         doc.internal.pageSize.getWidth() / 2, 22, { align: 'center' });
-    doc.text(`Tanggal Cetak: ${today}`,               doc.internal.pageSize.getWidth() / 2, 29, { align: 'center' });
-
-    const tableElement = document.getElementById('logbook-table');
-    let tableHeaders = [...tableElement.querySelectorAll('thead th')].map(th => th.innerText);
-    let tableBody = [...tableElement.querySelectorAll('tbody tr')]
-      .map(tr => {
-        if (tr.querySelector('td').colSpan === 7) return null;
-        return [...tr.querySelectorAll('td')].map(td => td.innerText);
-      }).filter(Boolean);
-
-    if (selectedLokasiValue !== 'all') {
-      tableHeaders.pop();
-      tableBody = tableBody.map(row => { row.pop(); return row; });
+    const doc  = new jsPDF('l', 'mm', 'a4');
+    const selV = lokasiFilter.value;
+    const selT = lokasiFilter.options[lokasiFilter.selectedIndex].text;
+    const tgl  = new Date().toLocaleDateString('id-ID', { day:'2-digit', month:'long', year:'numeric' });
+    const cx   = doc.internal.pageSize.getWidth() / 2;
+    doc.setFontSize(16); doc.setFont('helvetica','bold');
+    doc.text('LOGBOOK PENGGUNAAN LABORATORIUM', cx, 15, { align:'center' });
+    doc.setFontSize(12); doc.setFont('helvetica','normal');
+    doc.text(`Lokasi: ${selT}`, cx, 22, { align:'center' });
+    doc.text(`Tanggal Cetak: ${tgl}`, cx, 29, { align:'center' });
+    const tbl = document.getElementById('logbook-table');
+    let heads = [...tbl.querySelectorAll('thead th')].map(th => th.innerText);
+    let rows  = [...tbl.querySelectorAll('tbody tr')]
+      .map(tr => tr.querySelector('td').colSpan === 7 ? null : [...tr.querySelectorAll('td')].map(td => td.innerText))
+      .filter(Boolean);
+    if (selV !== 'all') { heads.pop(); rows = rows.map(r => { r.pop(); return r; }); }
+    doc.autoTable({ head:[heads], body:rows, startY:35, theme:'grid',
+      headStyles:{ fillColor:[22,160,133] }, styles:{ fontSize:8 }, margin:{ top:30 } });
+    const n = doc.internal.getNumberOfPages();
+    const ft = `© ${new Date().getFullYear()} Laboratorium Teknik Elektro dan Komputer`;
+    for (let i = 1; i <= n; i++) {
+      doc.setPage(i); doc.setFontSize(8);
+      doc.text(ft, cx, doc.internal.pageSize.getHeight() - 10, { align:'center' });
     }
-
-    doc.autoTable({
-      head: [tableHeaders], body: tableBody,
-      startY: 35, theme: 'grid',
-      headStyles: { fillColor: [22, 160, 133] },
-      styles: { fontSize: 8 }, margin: { top: 30 }
-    });
-
-    const pageCount = doc.internal.getNumberOfPages();
-    const footerText = `© ${new Date().getFullYear()} Laboratorium Teknik Elektro dan Komputer`;
-    for (let i = 1; i <= pageCount; i++) {
-      doc.setPage(i);
-      doc.setFontSize(8);
-      doc.text(footerText, doc.internal.pageSize.getWidth() / 2, doc.internal.pageSize.getHeight() - 10, { align: 'center' });
-    }
-    doc.save(`Logbook Laboratorium - ${selectedLokasiText}.pdf`);
+    doc.save(`Logbook Laboratorium - ${selT}.pdf`);
   }
 
-  // ─── Fetch with proxy fallback ────────────────────────────────────────────────
-  function parseCSV(csvText) {
-    return new Promise((resolve, reject) => {
-      Papa.parse(csvText, {
-        complete: (results) => resolve(results.data),
-        error: (err) => reject(err)
-      });
-    });
-  }
-
-  async function tryFetchWithProxy(strategy) {
-    const cacheBust = `&t=${Date.now()}`;
-    const sheetUrl  = SHEET_BASE_URL + cacheBust;
-    const proxyUrl  = strategy.buildUrl(sheetUrl);
-
-    const controller = new AbortController();
-    const timeout    = setTimeout(() => controller.abort(), 8000); // 8 s timeout per proxy
-
-    try {
-      const res = await fetch(proxyUrl, { signal: controller.signal });
-      clearTimeout(timeout);
-
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-      let csvText;
-      if (strategy.isJson) {
-        const json = await res.json();
-        csvText = json.contents;
-      } else {
-        csvText = await res.text();
-      }
-
-      if (!csvText || csvText.trim().length === 0) throw new Error('Empty response');
-
-      return await parseCSV(csvText);
-    } catch (err) {
-      clearTimeout(timeout);
-      throw err;
-    }
+  // ── Fetch dengan 3 strategi berurutan ────────────────────────────────────────
+  async function fetchWithTimeout(promise, ms = 10000) {
+    return Promise.race([
+      promise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), ms))
+    ]);
   }
 
   async function fetchData() {
@@ -276,35 +170,68 @@ function initApp() {
     document.getElementById('logbook-body').innerHTML =
       '<tr><td colspan="7" style="text-align:center;color:#888;">Memuat data...</td></tr>';
 
-    let lastError = null;
+    const cb = `&t=${Date.now()}`;
 
-    for (const strategy of PROXY_STRATEGIES) {
+    const strategies = [
+      {
+        label: 'Direct (Google Sheets)',
+        getFetch: () => fetch(CSV_URL + cb, { mode: 'cors' })
+                          .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); })
+      },
+      {
+        label: 'corsproxy.io',
+        getFetch: () => fetch(`https://corsproxy.io/?${encodeURIComponent(CSV_URL + cb)}`)
+                          .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); })
+      },
+      {
+        label: 'allorigins',
+        getFetch: () => fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(CSV_URL + cb)}`)
+                          .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+                          .then(j => {
+                            if (!j.contents) throw new Error('Konten kosong dari allorigins');
+                            return j.contents;
+                          })
+      }
+    ];
+
+    for (const s of strategies) {
       try {
-        console.log(`Mencoba proxy: ${strategy.label}...`);
-        const data = await tryFetchWithProxy(strategy);
+        console.log(`⏳ Mencoba: ${s.label}`);
+        const csvText = await fetchWithTimeout(s.getFetch(), 10000);
+        if (!csvText || !csvText.trim()) throw new Error('Response kosong');
 
-        if (!data || data.length < 2) throw new Error('Data terlalu sedikit / kosong');
-
-        console.log(`✅ Berhasil via ${strategy.label} — ${data.length} baris`);
-        allData = data;
-        populateLokasiFilter();
-        filterAndRender();
-        refreshBtn.classList.remove('loading');
-        return; // success — stop trying further proxies
+        // Gunakan PapaParse untuk parsing CSV
+        Papa.parse(csvText, {
+          skipEmptyLines: true,
+          complete: ({ data }) => {
+            if (!data || data.length < 2) {
+              showError('Data spreadsheet kosong atau tidak valid.');
+              return;
+            }
+            console.log(`✅ Berhasil via ${s.label} — ${data.length} baris`);
+            allData = data;
+            populateLokasiFilter();
+            filterAndRender();
+            refreshBtn.classList.remove('loading');
+          },
+          error: (err) => {
+            console.warn('PapaParse error:', err);
+            showError('Gagal memproses data CSV.');
+          }
+        });
+        return; // sukses
 
       } catch (err) {
-        console.warn(`❌ Gagal via ${strategy.label}:`, err.message);
-        lastError = err;
+        console.warn(`❌ Gagal via ${s.label}:`, err.message);
       }
     }
 
-    // All proxies failed
-    console.error('Semua proxy gagal:', lastError);
+    showError('Gagal memuat data. Pastikan spreadsheet sudah di-set publik ("Siapa saja yang memiliki link dapat melihat").');
+  }
+
+  function showError(msg) {
     document.getElementById('logbook-body').innerHTML =
-      '<tr><td colspan="7" style="text-align:center;color:#e11d48;">' +
-      'Gagal memuat data. Pastikan spreadsheet sudah publik dan bisa diakses.<br>' +
-      '<small>Semua proxy dicoba dan gagal. Coba refresh lagi beberapa saat.</small>' +
-      '</td></tr>';
+      `<tr><td colspan="7" style="text-align:center;color:#e11d48;padding:1.5rem;">⚠️ ${msg}</td></tr>`;
     refreshBtn.classList.remove('loading');
   }
 
