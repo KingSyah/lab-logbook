@@ -1,4 +1,25 @@
-document.addEventListener('DOMContentLoaded', () => {
+function waitForLibraries(callback, retries = 20) {
+  const ready = typeof Papa !== 'undefined' &&
+                typeof countUp !== 'undefined' &&
+                typeof window.jspdf !== 'undefined';
+  if (ready) {
+    callback();
+  } else if (retries > 0) {
+    setTimeout(() => waitForLibraries(callback, retries - 1), 200);
+  } else {
+    console.error('Library CDN gagal dimuat setelah beberapa percobaan.');
+    document.getElementById('logbook-body').innerHTML =
+      '<tr><td colspan="7" style="text-align:center;color:#e11d48;">' +
+      'Gagal memuat library. Periksa koneksi internet Anda dan refresh halaman.' +
+      '</td></tr>';
+  }
+}
+
+window.addEventListener('load', () => {
+  waitForLibraries(initApp);
+});
+
+function initApp() {
   document.getElementById('year').textContent = new Date().getFullYear();
 
   const SHEET_ID = '17BPISEu5o6qDmsNtSh8hmimMLXujwFp4-SpHrQK3XO0';
@@ -11,7 +32,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Counter instances
   const todayCounter = new countUp.CountUp('today-counter', 0, { duration: 2 });
   const monthCounter = new countUp.CountUp('month-counter', 0, { duration: 2 });
-  const yearCounter = new countUp.CountUp('year-counter', 0, { duration: 2 });
+  const yearCounter  = new countUp.CountUp('year-counter',  0, { duration: 2 });
 
   todayCounter.start();
   monthCounter.start();
@@ -288,4 +309,4 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   fetchData();
-});
+}
