@@ -17,7 +17,6 @@ function initApp() {
   document.getElementById('year').textContent = new Date().getFullYear();
 
   const SHEET_ID = '17BPISEu5o6qDmsNtSh8hmimMLXujwFp4-SpHrQK3XO0';
-  const CSV_URL  = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=0`;
 
   let allData = [];
   const LOKASI_COLUMN_INDEX = 6;
@@ -157,12 +156,20 @@ function initApp() {
     doc.save(`Logbook Laboratorium - ${selT}.pdf`);
   }
 
-  // ── Fetch dengan 3 strategi berurutan ────────────────────────────────────────
-  async function fetchWithTimeout(promise, ms = 10000) {
+  // ── Fetch dengan validasi isi response ───────────────────────────────────────
+  async function fetchWithTimeout(promise, ms = 12000) {
     return Promise.race([
       promise,
       new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), ms))
     ]);
+  }
+
+  function looksLikeCSV(text) {
+    // Pastikan bukan HTML login page Google
+    if (!text) return false;
+    if (text.trimStart().startsWith('<!DOCTYPE') || text.trimStart().startsWith('<html')) return false;
+    // Harus ada minimal 1 koma atau baris
+    return text.includes(',') || text.includes('\n');
   }
 
   async function fetchData() {
@@ -171,62 +178,97 @@ function initApp() {
       '<tr><td colspan="7" style="text-align:center;color:#888;">Memuat data...</td></tr>';
 
     const cb = `&t=${Date.now()}`;
+    const directUrl = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=0${cb}`;
 
     const strategies = [
       {
-        label: 'Direct (Google Sheets)',
-        getFetch: () => fetch(CSV_URL + cb, { mode: 'cors' })
-                          .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); })
+        label: 'Direct',
+        getCSV: async () => {
+          const r = await fetch(directUrl, { mode: 'cors' });
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.text();
+        }
       },
       {
         label: 'corsproxy.io',
-        getFetch: () => fetch(`https://corsproxy.io/?${encodeURIComponent(CSV_URL + cb)}`)
-                          .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); })
+        getCSV: async () => {
+          const r = await fetch(`https://corsproxy.io/?${encodeURIComponent(directUrl)}`);
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.text();
+        }
       },
       {
         label: 'allorigins',
-        getFetch: () => fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(CSV_URL + cb)}`)
-                          .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-                          .then(j => {
-                            if (!j.contents) throw new Error('Konten kosong dari allorigins');
-                            return j.contents;
-                          })
+        getCSV: async () => {
+          const r = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(directUrl)}`);
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          const j = await r.json();
+          if (!j.contents) throw new Error('Contents kosong');
+          return j.contents;
+        }
+      },
+      {
+        label: 'PapaParse download',
+        getCSV: () => new Promise((resolve, reject) => {
+          // Fallback terakhir: biarkan PapaParse yang handle fetch-nya sendiri
+          Papa.parse(directUrl, {
+            download: true,
+            skipEmptyLines: true,
+            complete: ({ data }) => resolve({ _papaData: data }),
+            error: reject
+          });
+        })
       }
     ];
 
     for (const s of strategies) {
       try {
         console.log(`⏳ Mencoba: ${s.label}`);
-        const csvText = await fetchWithTimeout(s.getFetch(), 10000);
-        if (!csvText || !csvText.trim()) throw new Error('Response kosong');
+        const result = await fetchWithTimeout(s.getCSV(), 12000);
 
-        // Gunakan PapaParse untuk parsing CSV
+        // Strategi terakhir (PapaParse download) langsung beri data
+        if (result && result._papaData) {
+          const data = result._papaData;
+          if (!data || data.length < 2) throw new Error('Data < 2 baris');
+          console.log(`✅ Berhasil via ${s.label} — ${data.length} baris`);
+          onDataLoaded(data);
+          return;
+        }
+
+        // Strategi lain: validasi dulu isi CSV-nya
+        const csvText = result;
+        if (!looksLikeCSV(csvText)) {
+          console.warn(`⚠️ ${s.label} mengembalikan bukan CSV (mungkin HTML redirect):`, csvText.slice(0, 100));
+          throw new Error('Response bukan CSV');
+        }
+
         Papa.parse(csvText, {
           skipEmptyLines: true,
           complete: ({ data }) => {
             if (!data || data.length < 2) {
-              showError('Data spreadsheet kosong atau tidak valid.');
+              console.warn(`⚠️ ${s.label}: parsed tapi data < 2 baris`);
               return;
             }
             console.log(`✅ Berhasil via ${s.label} — ${data.length} baris`);
-            allData = data;
-            populateLokasiFilter();
-            filterAndRender();
-            refreshBtn.classList.remove('loading');
+            onDataLoaded(data);
           },
-          error: (err) => {
-            console.warn('PapaParse error:', err);
-            showError('Gagal memproses data CSV.');
-          }
+          error: (err) => console.warn(`PapaParse error dari ${s.label}:`, err)
         });
-        return; // sukses
+        return;
 
       } catch (err) {
         console.warn(`❌ Gagal via ${s.label}:`, err.message);
       }
     }
 
-    showError('Gagal memuat data. Pastikan spreadsheet sudah di-set publik ("Siapa saja yang memiliki link dapat melihat").');
+    showError('Gagal memuat data. Pastikan spreadsheet sudah di-set <b>"Siapa saja yang memiliki link"</b> dan coba refresh.');
+  }
+
+  function onDataLoaded(data) {
+    allData = data;
+    populateLokasiFilter();
+    filterAndRender();
+    refreshBtn.classList.remove('loading');
   }
 
   function showError(msg) {
