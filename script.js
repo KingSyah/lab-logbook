@@ -2,6 +2,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('year').textContent = new Date().getFullYear();
 
   const SHEET_ID = '17BPISEu5o6qDmsNtSh8hmimMLXujwFp4-SpHrQK3XO0';
+  const GID      = '14145562'; // gid dari URL spreadsheet kamu
   let allData = [];
   const LOKASI_COLUMN_INDEX = 6;
   const ITEMS_PER_PAGE = 10;
@@ -145,56 +146,48 @@ document.addEventListener('DOMContentLoaded', () => {
     doc.save(`Logbook Laboratorium - ${selT}.pdf`);
   }
 
-  // ── Daftar proxy — dicoba satu per satu sampai berhasil ──────────────────────
-  const PROXIES = [
-    u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
-    u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
-    u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
-  ];
+  function onSuccess(data) {
+    allData = data;
+    populateLokasiFilter();
+    filterAndRender();
+    refreshBtn.classList.remove('loading');
+  }
 
-  function tryProxy(proxyIndex) {
-    if (proxyIndex >= PROXIES.length) {
-      // Semua proxy gagal
-      document.getElementById('logbook-body').innerHTML =
-        '<tr><td colspan="7" style="text-align:center;color:#e11d48;padding:1rem;">' +
-        'Gagal memuat data. Pastikan spreadsheet sudah di-set publik dan coba refresh.' +
-        '</td></tr>';
-      refreshBtn.classList.remove('loading');
-      return;
-    }
-
-    const baseUrl  = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=0`;
-    const finalUrl = PROXIES[proxyIndex](baseUrl);
-
-    Papa.parse(finalUrl, {
-      download: true,
-      skipEmptyLines: true,
-      complete: (results) => {
-        const data = results.data;
-        // Validasi: pastikan bukan HTML (misalnya halaman login Google)
-        if (!data || data.length < 2 || (data[0] && data[0][0] && data[0][0].trim().startsWith('<'))) {
-          console.warn(`Proxy ${proxyIndex} mengembalikan data tidak valid, coba berikutnya...`);
-          tryProxy(proxyIndex + 1);
-          return;
-        }
-        console.log(`✅ Berhasil via proxy ${proxyIndex} — ${data.length} baris`);
-        allData = data;
-        populateLokasiFilter();
-        filterAndRender();
-        refreshBtn.classList.remove('loading');
-      },
-      error: (error) => {
-        console.warn(`Proxy ${proxyIndex} error:`, error);
-        tryProxy(proxyIndex + 1);
-      }
-    });
+  function onError(msg) {
+    console.error(msg);
+    document.getElementById('logbook-body').innerHTML =
+      `<tr><td colspan="7" style="text-align:center;color:#e11d48;padding:1rem;">
+        ⚠️ Gagal memuat data.<br>
+        <small>Pastikan spreadsheet sudah di-<b>Publish to web</b> (File → Share → Publish to web → Publish).<br>
+        Share link saja tidak cukup — harus Publish to web.</small>
+      </td></tr>`;
+    refreshBtn.classList.remove('loading');
   }
 
   function fetchData() {
     refreshBtn.classList.add('loading');
     document.getElementById('logbook-body').innerHTML =
       '<tr><td colspan="7" style="text-align:center;color:#888;">Memuat data...</td></tr>';
-    tryProxy(0);
+
+    // URL "Publish to web" — HARUS sudah di-publish via File > Share > Publish to web
+    // Format ini tidak kena CORS redirect, langsung bisa diakses browser
+    const PUBLISHED_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/pub?gid=${GID}&single=true&output=csv&t=${Date.now()}`;
+
+    Papa.parse(PUBLISHED_URL, {
+      download: true,
+      skipEmptyLines: true,
+      complete: (results) => {
+        const data = results.data;
+        // Cek apakah response adalah HTML (berarti belum di-publish atau gagal)
+        if (!data || data.length < 2 || (data[0][0] && data[0][0].trim().startsWith('<'))) {
+          onError('Data tidak valid atau belum di-publish.');
+          return;
+        }
+        console.log('✅ Data loaded:', data.length, 'baris');
+        onSuccess(data);
+      },
+      error: (err) => onError('PapaParse error: ' + err)
+    });
   }
 
   fetchData();
