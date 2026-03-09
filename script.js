@@ -13,7 +13,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const monthCounter = new countUp.CountUp('month-counter', 0, { duration: 2 });
   const yearCounter = new countUp.CountUp('year-counter', 0, { duration: 2 });
 
-  // Start the counters
   todayCounter.start();
   monthCounter.start();
   yearCounter.start();
@@ -31,6 +30,31 @@ document.addEventListener('DOMContentLoaded', () => {
   prevPageBtn.addEventListener('click', () => changePage(-1));
   nextPageBtn.addEventListener('click', () => changePage(1));
 
+  // ─── Multiple proxy strategies ───────────────────────────────────────────────
+  const SHEET_BASE_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=0`;
+
+  // Each entry: { label, buildUrl(sheetUrl) }
+  const PROXY_STRATEGIES = [
+    {
+      label: 'allorigins (raw)',
+      buildUrl: (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`
+    },
+    {
+      label: 'corsproxy.io',
+      buildUrl: (u) => `https://corsproxy.io/?${encodeURIComponent(u)}`
+    },
+    {
+      label: 'allorigins (get)',
+      buildUrl: (u) => `https://api.allorigins.win/get?url=${encodeURIComponent(u)}`,
+      isJson: true   // returns { contents: "csv string" }
+    },
+    {
+      label: 'cors.sh (no key)',
+      buildUrl: (u) => `https://cors.sh/${u}`
+    }
+  ];
+
+  // ─── Helpers ──────────────────────────────────────────────────────────────────
   function escapeHTML(str) {
     if (!str) return '';
     return str.toString().replace(/[&<>"']/g, tag => ({
@@ -42,13 +66,27 @@ document.addEventListener('DOMContentLoaded', () => {
     return row && row.length > LOKASI_COLUMN_INDEX && row.slice(1, 5).every(Boolean) && row[LOKASI_COLUMN_INDEX];
   }
 
+  function parseTimestamp(timestamp) {
+    if (!timestamp) return null;
+    let date = new Date(timestamp);
+    if (!isNaN(date.getTime())) return date;
+
+    const parts = timestamp.split(/[\/\s:]/);
+    if (parts.length >= 3) {
+      const day   = parseInt(parts[0], 10);
+      const month = parseInt(parts[1], 10) - 1;
+      const year  = parseInt(parts[2], 10);
+      date = new Date(year, month, day);
+      if (!isNaN(date.getTime())) return date;
+    }
+    return null;
+  }
+
   function populateLokasiFilter() {
     const uniqueLokasi = [...new Set(allData.slice(1).map(row => row[LOKASI_COLUMN_INDEX]).filter(Boolean))];
     uniqueLokasi.sort();
-    
     const currentFilterValue = lokasiFilter.value;
     lokasiFilter.innerHTML = '<option value="all">Semua Lokasi</option>';
-
     uniqueLokasi.forEach(lokasi => {
       const option = document.createElement('option');
       option.value = lokasi;
@@ -58,68 +96,17 @@ document.addEventListener('DOMContentLoaded', () => {
     lokasiFilter.value = currentFilterValue;
   }
 
-  function parseTimestamp(timestamp) {
-    // Handle different date formats
-    if (!timestamp) return null;
-    
-    // Try parsing as M/D/YYYY H:mm:ss format
-    let date = new Date(timestamp);
-    if (!isNaN(date.getTime())) {
-      return date;
-    }
-
-    // Try parsing DD/MM/YYYY format
-    const parts = timestamp.split(/[\/\s:]/);
-    if (parts.length >= 3) {
-      // Assuming DD/MM/YYYY format
-      const day = parseInt(parts[0], 10);
-      const month = parseInt(parts[1], 10) - 1; // Months are 0-based
-      const year = parseInt(parts[2], 10);
-      date = new Date(year, month, day);
-      if (!isNaN(date.getTime())) {
-        return date;
-      }
-    }
-
-    return null;
-  }
-
   function updateCounters(data) {
-    const today = new Date();
-    const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const today        = new Date();
+    const startOfDay   = new Date(today.getFullYear(), today.getMonth(), today.getDate());
     const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
-    const startOfYear = new Date(today.getFullYear(), 0, 1);
+    const startOfYear  = new Date(today.getFullYear(), 0, 1);
 
     const validRows = data.slice(1).filter(isValidRow);
-    
-    const todayCount = validRows.filter(row => {
-      const date = parseTimestamp(row[0]);
-      if (!date) return false;
-      return date >= startOfDay;
-    }).length;
 
-    const monthCount = validRows.filter(row => {
-      const date = parseTimestamp(row[0]);
-      if (!date) return false;
-      return date >= startOfMonth;
-    }).length;
-
-    const yearCount = validRows.filter(row => {
-      const date = parseTimestamp(row[0]);
-      if (!date) return false;
-      return date >= startOfYear;
-    }).length;
-
-    console.log('Counters:', {
-      today: todayCount,
-      month: monthCount,
-      year: yearCount,
-      totalRows: validRows.length,
-      sampleDates: validRows.slice(0, 3).map(row => ({
-        original: row[0],
-        parsed: parseTimestamp(row[0])
-      }))
-    });
+    const todayCount = validRows.filter(r => { const d = parseTimestamp(r[0]); return d && d >= startOfDay; }).length;
+    const monthCount = validRows.filter(r => { const d = parseTimestamp(r[0]); return d && d >= startOfMonth; }).length;
+    const yearCount  = validRows.filter(r => { const d = parseTimestamp(r[0]); return d && d >= startOfYear; }).length;
 
     todayCounter.update(todayCount);
     monthCounter.update(monthCount);
@@ -135,9 +122,9 @@ document.addEventListener('DOMContentLoaded', () => {
   function renderTable(dataToRender) {
     const tbody = document.getElementById('logbook-body');
     tbody.innerHTML = '';
-    
+
     if (!dataToRender.length) {
-      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; color:#888;">Tidak ada data yang cocok.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#888;">Tidak ada data yang cocok.</td></tr>';
       pageInfo.textContent = 'Halaman 0 dari 0';
       prevPageBtn.disabled = true;
       nextPageBtn.disabled = true;
@@ -145,8 +132,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     const totalPages = Math.ceil((dataToRender.length - 1) / ITEMS_PER_PAGE);
-    const startIdx = (currentPage - 1) * ITEMS_PER_PAGE + 1;
-    const endIdx = Math.min(startIdx + ITEMS_PER_PAGE, dataToRender.length);
+    const startIdx   = (currentPage - 1) * ITEMS_PER_PAGE + 1;
+    const endIdx     = Math.min(startIdx + ITEMS_PER_PAGE, dataToRender.length);
 
     dataToRender.slice(startIdx, endIdx).forEach(row => {
       if (!isValidRow(row)) return;
@@ -169,14 +156,12 @@ document.addEventListener('DOMContentLoaded', () => {
   function filterAndRender() {
     const selectedLokasi = lokasiFilter.value;
     currentPage = 1;
-
     if (selectedLokasi === 'all') {
       filteredData = allData;
     } else {
       const header = allData[0];
       filteredData = [header, ...allData.slice(1).filter(row => row[LOKASI_COLUMN_INDEX] === selectedLokasi)];
     }
-
     renderTable(filteredData);
     updateCounters(filteredData);
   }
@@ -184,84 +169,123 @@ document.addEventListener('DOMContentLoaded', () => {
   function printToPdf() {
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF('l', 'mm', 'a4');
-
     const selectedLokasiValue = lokasiFilter.value;
-    const selectedLokasiText = lokasiFilter.options[lokasiFilter.selectedIndex].text;
+    const selectedLokasiText  = lokasiFilter.options[lokasiFilter.selectedIndex].text;
     const today = new Date().toLocaleDateString('id-ID', { day: '2-digit', month: 'long', year: 'numeric' });
 
-    doc.setFontSize(16);
-    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(16); doc.setFont('helvetica', 'bold');
     doc.text('LOGBOOK PENGGUNAAN LABORATORIUM', doc.internal.pageSize.getWidth() / 2, 15, { align: 'center' });
-    
-    doc.setFontSize(12);
-    doc.setFont('helvetica', 'normal');
-    doc.text(`Lokasi: ${selectedLokasiText}`, doc.internal.pageSize.getWidth() / 2, 22, { align: 'center' });
-    doc.text(`Tanggal Cetak: ${today}`, doc.internal.pageSize.getWidth() / 2, 29, { align: 'center' });
+    doc.setFontSize(12); doc.setFont('helvetica', 'normal');
+    doc.text(`Lokasi: ${selectedLokasiText}`,         doc.internal.pageSize.getWidth() / 2, 22, { align: 'center' });
+    doc.text(`Tanggal Cetak: ${today}`,               doc.internal.pageSize.getWidth() / 2, 29, { align: 'center' });
 
     const tableElement = document.getElementById('logbook-table');
     let tableHeaders = [...tableElement.querySelectorAll('thead th')].map(th => th.innerText);
-    let tableBody = [...tableElement.querySelectorAll('tbody tr')].map(tr => {
+    let tableBody = [...tableElement.querySelectorAll('tbody tr')]
+      .map(tr => {
         if (tr.querySelector('td').colSpan === 7) return null;
         return [...tr.querySelectorAll('td')].map(td => td.innerText);
-    }).filter(Boolean);
+      }).filter(Boolean);
 
     if (selectedLokasiValue !== 'all') {
-        tableHeaders.pop();
-        tableBody = tableBody.map(row => {
-            row.pop();
-            return row;
-        });
+      tableHeaders.pop();
+      tableBody = tableBody.map(row => { row.pop(); return row; });
     }
 
     doc.autoTable({
-      head: [tableHeaders],
-      body: tableBody,
-      startY: 35,
-      theme: 'grid',
+      head: [tableHeaders], body: tableBody,
+      startY: 35, theme: 'grid',
       headStyles: { fillColor: [22, 160, 133] },
-      styles: { fontSize: 8 },
-      margin: { top: 30 }
+      styles: { fontSize: 8 }, margin: { top: 30 }
     });
 
     const pageCount = doc.internal.getNumberOfPages();
     const footerText = `© ${new Date().getFullYear()} Laboratorium Teknik Elektro dan Komputer`;
-
     for (let i = 1; i <= pageCount; i++) {
       doc.setPage(i);
       doc.setFontSize(8);
       doc.text(footerText, doc.internal.pageSize.getWidth() / 2, doc.internal.pageSize.getHeight() - 10, { align: 'center' });
     }
-
     doc.save(`Logbook Laboratorium - ${selectedLokasiText}.pdf`);
   }
 
-  function fetchData() {
-    refreshBtn.classList.add('loading');
-    
-    const timestamp = new Date().getTime();
-    const GSheet_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&t=${timestamp}`;
-    const PROXY_URL = 'https://api.allorigins.win/raw?url=';
-    const CSV_URL = `${PROXY_URL}${encodeURIComponent(GSheet_URL)}`;
-    
-    Papa.parse(CSV_URL, {
-      download: true,
-      complete: (results) => {
-        allData = results.data;
-        console.log('Data loaded:', allData);
-        populateLokasiFilter();
-        filterAndRender();
-        refreshBtn.classList.remove('loading');
-      },
-      error: (error) => {
-        console.error('Error fetching or parsing CSV:', error);
-        document.getElementById('logbook-body').innerHTML = 
-          '<tr><td colspan="7" style="text-align:center; color:#e11d48;">' +
-          'Gagal memuat data. Pastikan spreadsheet sudah publik dan bisa diakses.' +
-          '</td></tr>';
-        refreshBtn.classList.remove('loading');
-      }
+  // ─── Fetch with proxy fallback ────────────────────────────────────────────────
+  function parseCSV(csvText) {
+    return new Promise((resolve, reject) => {
+      Papa.parse(csvText, {
+        complete: (results) => resolve(results.data),
+        error: (err) => reject(err)
+      });
     });
   }
 
+  async function tryFetchWithProxy(strategy) {
+    const cacheBust = `&t=${Date.now()}`;
+    const sheetUrl  = SHEET_BASE_URL + cacheBust;
+    const proxyUrl  = strategy.buildUrl(sheetUrl);
+
+    const controller = new AbortController();
+    const timeout    = setTimeout(() => controller.abort(), 8000); // 8 s timeout per proxy
+
+    try {
+      const res = await fetch(proxyUrl, { signal: controller.signal });
+      clearTimeout(timeout);
+
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      let csvText;
+      if (strategy.isJson) {
+        const json = await res.json();
+        csvText = json.contents;
+      } else {
+        csvText = await res.text();
+      }
+
+      if (!csvText || csvText.trim().length === 0) throw new Error('Empty response');
+
+      return await parseCSV(csvText);
+    } catch (err) {
+      clearTimeout(timeout);
+      throw err;
+    }
+  }
+
+  async function fetchData() {
+    refreshBtn.classList.add('loading');
+    document.getElementById('logbook-body').innerHTML =
+      '<tr><td colspan="7" style="text-align:center;color:#888;">Memuat data...</td></tr>';
+
+    let lastError = null;
+
+    for (const strategy of PROXY_STRATEGIES) {
+      try {
+        console.log(`Mencoba proxy: ${strategy.label}...`);
+        const data = await tryFetchWithProxy(strategy);
+
+        if (!data || data.length < 2) throw new Error('Data terlalu sedikit / kosong');
+
+        console.log(`✅ Berhasil via ${strategy.label} — ${data.length} baris`);
+        allData = data;
+        populateLokasiFilter();
+        filterAndRender();
+        refreshBtn.classList.remove('loading');
+        return; // success — stop trying further proxies
+
+      } catch (err) {
+        console.warn(`❌ Gagal via ${strategy.label}:`, err.message);
+        lastError = err;
+      }
+    }
+
+    // All proxies failed
+    console.error('Semua proxy gagal:', lastError);
+    document.getElementById('logbook-body').innerHTML =
+      '<tr><td colspan="7" style="text-align:center;color:#e11d48;">' +
+      'Gagal memuat data. Pastikan spreadsheet sudah publik dan bisa diakses.<br>' +
+      '<small>Semua proxy dicoba dan gagal. Coba refresh lagi beberapa saat.</small>' +
+      '</td></tr>';
+    refreshBtn.classList.remove('loading');
+  }
+
   fetchData();
-}); 
+});
